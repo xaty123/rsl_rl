@@ -23,20 +23,19 @@ from rsl_rl.utils import Normalizer
 
 class AMPDiscriminator(nn.Module):
     """
-    Discriminator neural network for adversarial motion priors (AMP) reward prediction.
-
-    Args:
-        input_dim (int): Dimension of the input feature vector (concatenated state and next state).
-        amp_reward_coef (float): Coefficient to scale the AMP reward.
-        hidden_layer_sizes (list[int]): Sizes of hidden layers in the MLP trunk.
-        device (torch.device): Device to run the model on (CPU or GPU).
-        task_reward_lerp (float, optional): Interpolation factor between AMP reward and task reward.
-            Defaults to 0.0 (only AMP reward).
-
-    Attributes:
-        trunk (nn.Sequential): MLP layers processing input features.
-        amp_linear (nn.Linear): Final linear layer producing discriminator output.
-        task_reward_lerp (float): Interpolation factor for combining rewards.
+    判别器神经网络用于对抗式运动先验（AMP）奖励预测。
+    
+    参数:
+        input_dim (int): 输入特征向量的维度（拼接的状态和下一个状态）。
+        amp_reward_coef (float): 用于缩放AMP奖励的系数。
+        hidden_layer_sizes (list[int]): MLP主干中隐藏层的大小列表。
+        device (torch.device): 用于运行模型的设备（CPU或GPU）。
+        task_reward_lerp (float, 可选): AMP奖励与任务奖励之间的插值因子。
+            默认为0.0（只使用AMP奖励）。
+    属性:
+        trunk (nn.Sequential): 处理输入特征的MLP层。
+        amp_linear (nn.Linear): 产生判别器输出的最终线性层。
+        task_reward_lerp (float): 用于组合奖励的插值因子。
     """
 
     def __init__(self, input_dim, amp_reward_coef, hidden_layer_sizes, device, normalize, task_reward_lerp=0.0):

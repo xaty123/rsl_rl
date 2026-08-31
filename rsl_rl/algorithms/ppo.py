@@ -217,7 +217,7 @@ class PPO:
             rewards = self.final_rewards
             # 保存amp policy观测值，但排除已done的环境
             # 只有未done的环境才是有效的transition，done的环境会被重置
-            if dones.any():
+            if dones.any(): # any()用于判断张量 dones 中是否有任意一个元素为 True
                 # 使用mask来过滤掉done的环境
                 not_done_mask = ~dones
                 valid_amp_obs = amp_obs[not_done_mask]

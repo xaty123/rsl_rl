@@ -78,10 +78,10 @@ class OnPolicyRunner:
         self.git_status_repos = [rsl_rl.__file__]
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
-        # Initialize writer
+        # Initialize writer 日志选择ensorBoard / W&B / Neptune / SwanLab...
         self._prepare_logging_writer()
 
-        # Randomize initial episode lengths (for exploration)
+        # 各环境的已走步数被随机打散，避免 4096 个环境同时 timeout，train.py会打开这个
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(
                 self.env.episode_length_buf, high=int(self.env.max_episode_length)
@@ -119,7 +119,7 @@ class OnPolicyRunner:
             print(f"Synchronizing parameters for rank {self.gpu_global_rank}...")
             self.alg.broadcast_parameters()
 
-        # Start training
+        # Start training 支持断点续训
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
         # 初始化rewards（首次调用act时需要）
