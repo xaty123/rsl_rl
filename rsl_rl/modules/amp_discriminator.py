@@ -63,13 +63,13 @@ class AMPDiscriminator(nn.Module):
 
     def forward(self, x):
         """
-        Forward pass through the discriminator network.
+        判别器网络的前向传播。
+        
+        参数:
+            x (torch.Tensor): 输入张量，形状为 (batch_size, input_dim)。
 
-        Args:
-            x (torch.Tensor): Input tensor with shape (batch_size, input_dim).
-
-        Returns:
-            torch.Tensor: Discriminator output logits with shape (batch_size, 1).
+        返回:
+            torch.Tensor: 判别器输出的logits，形状为 (batch_size, 1)。
         """
         h = self.trunk(x)
         d = self.amp_linear(h)
@@ -77,16 +77,17 @@ class AMPDiscriminator(nn.Module):
 
     def compute_grad_pen(self, expert_state, expert_next_state, lambda_=10):
         """
-        Compute gradient penalty for the expert data, used to regularize the discriminator.
+        计算专家数据的梯度惩罚，用于对判别器进行正则化。
 
-        Args:
-            expert_state (torch.Tensor): Batch of expert states.
-            expert_next_state (torch.Tensor): Batch of expert next states.
-            lambda_ (float, optional): Gradient penalty coefficient. Defaults to 10.
+        参数:
+            expert_state (torch.Tensor): 专家状态的批量张量。
+            expert_next_state (torch.Tensor): 专家下一时刻状态的批量张量。
+            lambda_ (float, 可选): 梯度惩罚系数，默认值为10。
 
-        Returns:
-            torch.Tensor: Scalar gradient penalty loss.
+        返回:
+            torch.Tensor: 标量梯度惩罚损失。
         """
+   
         expert_data = torch.cat([expert_state, expert_next_state], dim=-1)
         expert_data.requires_grad = True
 
@@ -102,18 +103,19 @@ class AMPDiscriminator(nn.Module):
 
     def predict_amp_reward(self, state, next_state, task_reward):
         """
-        Predict the AMP reward given current and next states, optionally interpolated with a task reward.
+        根据当前状态和下一状态预测AMP奖励，可选地与任务奖励进行线性插值。
 
-        Args:
-            state (torch.Tensor): Current state tensor.
-            next_state (torch.Tensor): Next state tensor.
-            task_reward (torch.Tensor): Task-specific reward tensor.
+        参数:
+            state (torch.Tensor): 当前状态的张量。
+            next_state (torch.Tensor): 下一时刻状态的张量。
+            task_reward (torch.Tensor): 任务相关的奖励张量。
 
-        Returns:
+        返回:
             tuple:
-                - reward (torch.Tensor): Predicted AMP reward (optionally interpolated) with shape (batch_size,).
-                - d (torch.Tensor): Raw discriminator output logits with shape (batch_size, 1).
+                - reward (torch.Tensor): 预测得到的AMP奖励（可包含插值），形状为(batch_size,)。
+                - d (torch.Tensor): 判别器的原始输出logits，形状为(batch_size, 1)。
         """
+   
         with torch.no_grad():
             self.eval()
             if self.normalizer is not None:
