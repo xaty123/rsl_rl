@@ -22,6 +22,7 @@ from rsl_rl.modules import (
     ActorCriticAE,
     ActorCriticVAE,
     ActorCriticECMM,
+    EncoderConcat,
     AMPDiscriminator,
     resolve_rnd_config,
     resolve_symmetry_config
@@ -35,6 +36,7 @@ ActorCriticType = (
     | ActorCriticAE
     | ActorCriticVAE
     | ActorCriticECMM
+    | EncoderConcat
 )
 
 
