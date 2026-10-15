@@ -132,6 +132,7 @@ class EncoderConcat(nn.Module):
         self.critic_head = nn.Linear(256, 1)
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         self.distribution = None
+        self._accumulate_norm = True
         Normal.set_default_validate_args(False)
         self.to(policy.device)
 
@@ -156,9 +157,13 @@ class EncoderConcat(nn.Module):
     def reset(self, dones: torch.Tensor | None = None) -> None:
         pass
 
+    def set_norm_update(self, enabled: bool) -> None:
+        """采样时累计归一化。PPO 更新策略时关掉，避免同一批样本被反复计入。"""
+        self._accumulate_norm = enabled
+
     def _policy(self, obs: TensorDict, update: bool) -> torch.Tensor:
         policy = obs["policy"]
-        if update and self.training:
+        if update and self.training and self._accumulate_norm:
             self.vecnorm.update(policy)
         return self.vecnorm.normalize(policy)
 

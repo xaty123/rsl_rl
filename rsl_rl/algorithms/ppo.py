@@ -57,6 +57,9 @@ class PPO:
         desired_kl: float = 0.01,
         device: str = "cpu",
         normalize_advantage_per_mini_batch: bool = False,
+        adaptive_lr_grow: float = 1.5,
+        adaptive_lr_ceil: float = 1.0e-2,
+        clip_negative_rewards: bool = False,
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters
@@ -155,6 +158,9 @@ class PPO:
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
         self.desired_kl = desired_kl
+        self.adaptive_lr_grow = adaptive_lr_grow
+        self.adaptive_lr_ceil = adaptive_lr_ceil
+        self.clip_negative_rewards = clip_negative_rewards
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
@@ -232,6 +238,9 @@ class PPO:
             self.style_rewards = None
             self.final_rewards = None
             
+        # 多项奖励在环境里已经相加。Gallant 在算优势前把这个和截到不小于 0。
+        if self.clip_negative_rewards:
+            rewards = rewards.clamp(min=0.0)
         # Record the rewards and dones
         # Note: We clone here because later on we bootstrap the rewards based on timeouts
         self.transition.rewards = rewards.clone()
@@ -267,6 +276,16 @@ class PPO:
         )
 
     def update(self) -> dict[str, float]:
+        freeze_norm = getattr(self.policy, "set_norm_update", None)
+        if freeze_norm is not None:
+            freeze_norm(False)
+        try:
+            return self._update_policy()
+        finally:
+            if freeze_norm is not None:
+                freeze_norm(True)
+
+    def _update_policy(self) -> dict[str, float]:
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
@@ -382,7 +401,9 @@ class PPO:
                         if kl_mean > self.desired_kl * 2.0:
                             self.learning_rate = max(1e-5, self.learning_rate / 1.5)
                         elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                            self.learning_rate = min(
+                                self.adaptive_lr_ceil, self.learning_rate * self.adaptive_lr_grow
+                            )
 
                     # Update the learning rate for all GPUs
                     if self.is_multi_gpu:

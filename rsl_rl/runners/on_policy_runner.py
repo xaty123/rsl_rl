@@ -40,6 +40,14 @@ ActorCriticType = (
 )
 
 
+def _format_duration(seconds: float) -> str:
+    """格式化为 H:MM:SS。小时按总数计，不在 24 小时处回绕。"""
+    whole = max(0, int(seconds))
+    hours, remainder = divmod(whole, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 class OnPolicyRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
 
@@ -350,15 +358,12 @@ class OnPolicyRunner:
             f"""{"-" * width}\n"""
             f"""{"Total timesteps:":>{pad}} {self.tot_timesteps}\n"""
             f"""{"Iteration time:":>{pad}} {iteration_time:.2f}s\n"""
-            f"""{"Time elapsed:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
+            f"""{"Time elapsed:":>{pad}} {_format_duration(self.tot_time)}\n"""
             f"""{"ETA:":>{pad}} {
-                time.strftime(
-                    "%H:%M:%S",
-                    time.gmtime(
-                        self.tot_time
-                        / (locs["it"] - locs["start_iter"] + 1)
-                        * (locs["start_iter"] + locs["num_learning_iterations"] - locs["it"])
-                    ),
+                _format_duration(
+                    self.tot_time
+                    / (locs["it"] - locs["start_iter"] + 1)
+                    * (locs["start_iter"] + locs["num_learning_iterations"] - locs["it"])
                 )
             }\n"""
         )
