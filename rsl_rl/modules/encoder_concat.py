@@ -208,3 +208,94 @@ class EncoderConcat(nn.Module):
 
     def create_optimizers(self, learning_rate: float) -> dict[str, torch.optim.Optimizer]:
         return {"optimizer": torch.optim.Adam(self.parameters(), lr=learning_rate)}
+
+
+class GallantEncoderConcat(EncoderConcat):
+    """保留网络与 checkpoint 键，集中 Gallant 的归一化、标准差、优化器和导出。"""
+
+    def __init__(self, obs, *args, **kwargs):
+        super().__init__(obs, *args, **kwargs)
+        self.vecnorm.count.fill_(1.0)
+        # 原版构网时对 observation_spec.zero() 做一次更新，包含整批环境。
+        self.vecnorm.update(torch.zeros_like(obs["policy"]))
+
+    def _update_distribution(self, obs, update_norm):
+        feature = self.actor_encoder(self._policy(obs, update=update_norm), obs["grid_map_"])
+        mean = self.actor_mean(feature)
+        self.distribution = Normal(mean, self.std.clamp_min(1e-6).expand_as(mean))
+
+    def create_optimizers(self, learning_rate: float) -> dict[str, torch.optim.Optimizer]:
+        """一个 AdamW，权重衰减 0.01。第 0 组是演员，第 1 组是评论家。
+
+        成功版本的 actor_std 属于演员。这里的 std 同样放进第 0 组，学习率和衰减都跟着演员。
+        VecNorm 只有 buffer，不在这两组里。
+        """
+        actor_params = (
+            list(self.actor_encoder.parameters())
+            + list(self.actor_mean.parameters())
+            + [self.std]
+        )
+        critic_params = list(self.critic_encoder.parameters()) + list(self.critic_head.parameters())
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": actor_params},
+                {"params": critic_params},
+            ],
+            lr=learning_rate,
+            weight_decay=0.01,
+        )
+        return {"optimizer": optimizer}
+
+    def export_to_onnx(
+        self,
+        path: str,
+        filename: str = "policy.onnx",
+        normalizer: nn.Module | None = None,
+        verbose: bool = False,
+    ) -> None:
+        """将演员导出为 ONNX。本体归一化使用本网络的 VecNorm，不使用传入的 normalizer。"""
+        import os
+
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+        exporter = _OnnxEncoderConcatExporter(self, verbose)
+        exporter.export(path, filename)
+
+
+class _OnnxEncoderConcatExporter(nn.Module):
+    """EncoderConcat 的 ONNX 导出器。输入是未归一化的 policy 和 grid_map_。"""
+
+    def __init__(self, policy: EncoderConcat, verbose: bool = False) -> None:
+        super().__init__()
+        import copy
+
+        self.verbose = verbose
+        self.actor_encoder = copy.deepcopy(policy.actor_encoder)
+        self.actor_mean = copy.deepcopy(policy.actor_mean)
+        vec = policy.vecnorm
+        mean = vec.sum.detach().float().cpu()
+        var = (vec.ssq.detach().float().cpu() - mean.square()).clamp_min(vec.eps)
+        self.register_buffer("obs_mean", mean)
+        self.register_buffer("obs_std", var.sqrt())
+
+    def forward(self, policy: torch.Tensor, voxels: torch.Tensor) -> torch.Tensor:
+        policy = (policy - self.obs_mean) / self.obs_std
+        feature = self.actor_encoder(policy, voxels)
+        return self.actor_mean(feature)
+
+    def export(self, path: str, filename: str) -> None:
+        import os
+
+        self.to("cpu")
+        self.eval()
+        torch.onnx.export(
+            self,
+            (torch.zeros(1, 504), torch.zeros(1, 40, 32, 32)),
+            os.path.join(path, filename),
+            export_params=True,
+            opset_version=18,
+            verbose=self.verbose,
+            input_names=["policy", "grid_map"],
+            output_names=["actions"],
+            dynamic_axes={},
+        )

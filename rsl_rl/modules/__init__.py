@@ -20,7 +20,7 @@ from .amp_discriminator import AMPDiscriminator
 
 
 from .actor_critic_ECMM import ActorCriticECMM
-from .encoder_concat import EncoderConcat
+from .encoder_concat import EncoderConcat, GallantEncoderConcat
 
 __all__ = [
     "ActorCritic",
@@ -35,6 +35,7 @@ __all__ = [
     "ActorCriticVAE",
     "ActorCriticECMM",
     "EncoderConcat",
+    "GallantEncoderConcat",
     
     "AMPDiscriminator",
 ]
