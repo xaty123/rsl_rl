@@ -1,5 +1,7 @@
 """Gallant 算法构造与训练入口；环境统计由下游适配层提供。"""
 
+from __future__ import annotations
+
 from rsl_rl.algorithms import GallantPPO
 from rsl_rl.modules import GallantEncoderConcat, resolve_symmetry_config
 
@@ -31,3 +33,10 @@ class GallantOnPolicyRunner(OnPolicyRunner):
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # 普通 Gallant 训练从同步 reset 开始，不随机打散首次回合长度。
         return super().learn(num_learning_iterations, init_at_random_ep_len=False)
+
+    def load(self, path: str, load_optimizer: bool = True, map_location: str | None = None) -> dict:
+        infos = super().load(path, load_optimizer=load_optimizer, map_location=map_location)
+        if load_optimizer:
+            # Gallant 策略成功加载返回 True；第 0 组是演员，续用其实际学习率。
+            self.alg.learning_rate = self.alg.optimizer.param_groups[0]["lr"]
+        return infos

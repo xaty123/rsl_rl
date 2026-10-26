@@ -53,11 +53,20 @@ class GallantPPO(PPO):
         self._is_init.copy_(dones.reshape(-1, 1).bool())
 
     def _apply_kl_adaptive_lr(self, kl_mean):
-        # 原版每卡用自己的前向 KL；不做 KL 平均或学习率广播。
-        if kl_mean > self.desired_kl * 2.0:
-            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-        elif 0.0 < kl_mean < self.desired_kl / 2.0:
-            self.learning_rate = min(self.adaptive_lr_ceil, self.learning_rate * self.adaptive_lr_grow)
+        if self.is_multi_gpu:
+            # 各卡 minibatch 等量；保留调用方的本地 KL，仅归约副本。
+            kl_mean = kl_mean.clone()
+            torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+            kl_mean /= self.gpu_world_size
+        if not self.is_multi_gpu or self.gpu_global_rank == 0:
+            if kl_mean > self.desired_kl * 2.0:
+                self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+            elif 0.0 < kl_mean < self.desired_kl / 2.0:
+                self.learning_rate = min(self.adaptive_lr_ceil, self.learning_rate * self.adaptive_lr_grow)
+        if self.is_multi_gpu:
+            lr = torch.tensor(self.learning_rate, dtype=torch.float64, device=self.device)
+            torch.distributed.broadcast(lr, src=0)
+            self.learning_rate = lr.item()
         groups = self.optimizer.param_groups[:1] if self.adapt_lr_actor_only else self.optimizer.param_groups
         for group in groups:
             group["lr"] = self.learning_rate
