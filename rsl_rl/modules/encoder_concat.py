@@ -1,7 +1,8 @@
 """G1-Gallant 的 EncoderConcat。
 
 主实验用二维卷积。grid_map_ 是 (N, 40, 32, 32)：40 是通道，32×32 是空间。
-演员和评论家各一份编码器，权重不共享。两边读同一份归一化后的 policy，再加上体素。
+演员和评论家各一份编码器，权重不共享。policy 共享逐维归一化，
+actor_without_time 启用时仅演员删除两项时间，评论家始终读取完整观测。
 """
 
 from __future__ import annotations
@@ -106,6 +107,7 @@ class EncoderConcat(nn.Module):
         actor_hidden_dims: list[int] | None = None,
         critic_hidden_dims: list[int] | None = None,
         activation: str = "mish",
+        actor_without_time: bool = False,
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
@@ -117,6 +119,8 @@ class EncoderConcat(nn.Module):
             raise ValueError("EncoderConcat uses one learnable std vector of length num_actions.")
         super().__init__()
         self.obs_groups = obs_groups
+        self.actor_without_time = actor_without_time
+        self.actor_obs_dim = 502 if actor_without_time else 504
         self.extra_info: dict = {}
         policy = obs["policy"]
         voxels = obs["grid_map_"]
@@ -138,12 +142,13 @@ class EncoderConcat(nn.Module):
 
         example_policy = policy[:1].float()
         example_voxels = voxels[:1]
-        self.actor_encoder(example_policy, example_voxels)
+        self.actor_encoder(self._actor_input(example_policy), example_voxels)
         self.critic_encoder(example_policy, example_voxels)
         self.apply(self._init_module)
         nn.init.orthogonal_(self.actor_mean.weight, 0.01)
         nn.init.constant_(self.actor_mean.bias, 0.0)
-        print(f"EncoderConcat: policy {tuple(policy.shape)} voxels {tuple(voxels.shape)} actions {num_actions}")
+        print(f"EncoderConcat: policy {tuple(policy.shape)} actor {self.actor_obs_dim} "
+              f"critic 504 voxels {tuple(voxels.shape)} actions {num_actions}")
 
     @staticmethod
     def _init_module(module: nn.Module) -> None:
@@ -167,8 +172,18 @@ class EncoderConcat(nn.Module):
             self.vecnorm.update(policy)
         return self.vecnorm.normalize(policy)
 
+    def _actor_input(self, policy: torch.Tensor) -> torch.Tensor:
+        """命令前两列是目标 xy，第 2、3 列是已用和剩余时间；其它历史顺序不变。"""
+        if self.actor_without_time:
+            return torch.cat((policy[..., :2], policy[..., 4:]), dim=-1)
+        return policy
+
+    def _actor_policy(self, obs: TensorDict, update: bool) -> torch.Tensor:
+        """VecNorm 按列独立计算，裁剪后时间不会混入演员的其它输入。"""
+        return self._actor_input(self._policy(obs, update))
+
     def _update_distribution(self, obs: TensorDict, update_norm: bool) -> None:
-        feature = self.actor_encoder(self._policy(obs, update=update_norm), obs["grid_map_"])
+        feature = self.actor_encoder(self._actor_policy(obs, update=update_norm), obs["grid_map_"])
         mean = self.actor_mean(feature)
         self.distribution = Normal(mean, self.std.expand_as(mean))
 
@@ -177,7 +192,7 @@ class EncoderConcat(nn.Module):
         return self.distribution.sample(), self.extra_info
 
     def act_inference(self, obs: TensorDict) -> tuple[torch.Tensor, dict]:
-        feature = self.actor_encoder(self._policy(obs, update=False), obs["grid_map_"])
+        feature = self.actor_encoder(self._actor_policy(obs, update=False), obs["grid_map_"])
         return self.actor_mean(feature), self.extra_info
 
     def evaluate(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
@@ -220,7 +235,7 @@ class GallantEncoderConcat(EncoderConcat):
         self.vecnorm.update(torch.zeros_like(obs["policy"]))
 
     def _update_distribution(self, obs, update_norm):
-        feature = self.actor_encoder(self._policy(obs, update=update_norm), obs["grid_map_"])
+        feature = self.actor_encoder(self._actor_policy(obs, update=update_norm), obs["grid_map_"])
         mean = self.actor_mean(feature)
         self.distribution = Normal(mean, self.std.clamp_min(1e-6).expand_as(mean))
 
@@ -263,20 +278,21 @@ class GallantEncoderConcat(EncoderConcat):
 
 
 class _OnnxEncoderConcatExporter(nn.Module):
-    """EncoderConcat 的 ONNX 导出器。输入是未归一化的 policy 和 grid_map_。"""
+    """导出演员；policy 为未归一化的 504 维或去除时间后的 502 维。"""
 
     def __init__(self, policy: EncoderConcat, verbose: bool = False) -> None:
         super().__init__()
         import copy
 
         self.verbose = verbose
+        self.actor_obs_dim = policy.actor_obs_dim
         self.actor_encoder = copy.deepcopy(policy.actor_encoder)
         self.actor_mean = copy.deepcopy(policy.actor_mean)
         vec = policy.vecnorm
         mean = vec.sum.detach().float().cpu()
         var = (vec.ssq.detach().float().cpu() - mean.square()).clamp_min(vec.eps)
-        self.register_buffer("obs_mean", mean)
-        self.register_buffer("obs_std", var.sqrt())
+        self.register_buffer("obs_mean", policy._actor_input(mean).clone())
+        self.register_buffer("obs_std", policy._actor_input(var.sqrt()).clone())
 
     def forward(self, policy: torch.Tensor, voxels: torch.Tensor) -> torch.Tensor:
         policy = (policy - self.obs_mean) / self.obs_std
@@ -290,7 +306,7 @@ class _OnnxEncoderConcatExporter(nn.Module):
         self.eval()
         torch.onnx.export(
             self,
-            (torch.zeros(1, 504), torch.zeros(1, 40, 32, 32)),
+            (torch.zeros(1, self.actor_obs_dim), torch.zeros(1, 40, 32, 32)),
             os.path.join(path, filename),
             export_params=True,
             opset_version=18,
