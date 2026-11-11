@@ -16,21 +16,23 @@ from torch.distributions import Normal
 
 
 class VecNorm(nn.Module):
-    """累计 policy 的均值和方差。decay=1 时不遗忘旧样本。"""
+    """用 FP64 累计 policy 统计；decay=1 时不遗忘旧样本。"""
 
     def __init__(self, size: int, decay: float = 1.0, eps: float = 1e-5) -> None:
         super().__init__()
         self.decay = float(decay)
         self.eps = eps
-        self.register_buffer("sum", torch.zeros(size))
-        self.register_buffer("ssq", torch.zeros(size))
-        self.register_buffer("count", torch.tensor(0.0))
+        self.register_buffer("sum", torch.zeros(size, dtype=torch.float64))
+        self.register_buffer("ssq", torch.zeros(size, dtype=torch.float64))
+        self.register_buffer("count", torch.tensor(0.0, dtype=torch.float64))
 
     def update(self, values: torch.Tensor) -> None:
         flat = values.detach().reshape(-1, values.shape[-1])
         batch = flat.shape[0]
         if batch == 0:
             return
+        # 平方与批次归约也使用 FP64，避免在写入缓冲区前就丢失精度。
+        flat = flat.to(dtype=torch.float64)
         if self.decay < 1.0:
             self.count.mul_(self.decay).add_(batch)
             self.sum.mul_(self.decay).add_(flat.sum(0))
@@ -41,16 +43,22 @@ class VecNorm(nn.Module):
         self.sum.lerp_(flat.mean(0), weight)
         self.ssq.lerp_(flat.square().mean(0), weight)
 
-    def normalize(self, values: torch.Tensor) -> torch.Tensor:
+    def _compute_stats(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """运行时与导出共用 FP64 统计；零计数对应恒等归一化。"""
         if float(self.count) <= 0.0:
-            return values
+            return torch.zeros_like(self.sum), torch.ones_like(self.sum)
         if self.decay < 1.0:
             mean = self.sum / self.count
             var = (self.ssq / self.count - mean.square()).clamp_min(self.eps)
         else:
             mean = self.sum
             var = (self.ssq - mean.square()).clamp_min(self.eps)
-        return (values - mean) / var.sqrt()
+        return mean, var.sqrt()
+
+    def normalize(self, values: torch.Tensor) -> torch.Tensor:
+        mean, std = self._compute_stats()
+        # 只提升统计精度，网络输入与归一化反向传播保持原数据类型。
+        return (values - mean.to(dtype=values.dtype)) / std.to(dtype=values.dtype)
 
 
 class ConcatEncoder(nn.Module):
@@ -288,11 +296,11 @@ class _OnnxEncoderConcatExporter(nn.Module):
         self.actor_obs_dim = policy.actor_obs_dim
         self.actor_encoder = copy.deepcopy(policy.actor_encoder)
         self.actor_mean = copy.deepcopy(policy.actor_mean)
-        vec = policy.vecnorm
-        mean = vec.sum.detach().float().cpu()
-        var = (vec.ssq.detach().float().cpu() - mean.square()).clamp_min(vec.eps)
+        mean, std = policy.vecnorm._compute_stats()
+        mean = mean.detach().float().cpu()
+        std = std.detach().float().cpu()
         self.register_buffer("obs_mean", policy._actor_input(mean).clone())
-        self.register_buffer("obs_std", policy._actor_input(var.sqrt()).clone())
+        self.register_buffer("obs_std", policy._actor_input(std).clone())
 
     def forward(self, policy: torch.Tensor, voxels: torch.Tensor) -> torch.Tensor:
         policy = (policy - self.obs_mean) / self.obs_std
